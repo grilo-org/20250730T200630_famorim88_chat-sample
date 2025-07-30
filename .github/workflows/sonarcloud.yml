@@ -1,0 +1,75 @@
+name: "SonarCloud Analysis"
+on:
+  push:
+    branches: [ "master" ]
+  workflow_dispatch: {}
+jobs:
+  sonar-scan:
+    name: SonarCloud Scan
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Detectar a Raiz do Projeto (por Atividade Recente)
+        id: find-root
+        shell: bash
+        run: |
+          LATEST_TIMESTAMP=0
+          PROJECT_DIR="."
+          PROJECT_LIST=""
+          PROJECT_COUNT=0
+          
+          ALL_PROJECTS=$(find . -name "settings.gradle" -o -name "settings.gradle.kts")
+          
+          if [ -n "$ALL_PROJECTS" ]; then
+            for settings_file in $ALL_PROJECTS; do
+              PROJECT_COUNT=$((PROJECT_COUNT+1))
+              current_dir=$(dirname "$settings_file")
+              PROJECT_LIST="$PROJECT_LIST\n- $current_dir"
+              timestamp=$(git log -1 --format=%ct -- "$current_dir")
+              if [ "$timestamp" -gt "$LATEST_TIMESTAMP" ]; then
+                LATEST_TIMESTAMP=$timestamp
+                PROJECT_DIR=$current_dir
+              fi
+            done
+          fi
+          
+          if [ "$PROJECT_COUNT" -gt 1 ]; then
+            ALERT_MESSAGE='--- ALERTA: MÚLTIPLOS PROJETOS DETECTADOS ---'
+            echo "$ALERT_MESSAGE"
+            echo "::warning::$ALERT_MESSAGE"
+            echo "$ALERT_MESSAGE" > multi-project-alert.txt
+            echo "Foram encontrados $PROJECT_COUNT projetos. O selecionado foi '$PROJECT_DIR'." >> multi-project-alert.txt
+            echo "ALERT_FILE_CREATED=true" >> $GITHUB_ENV
+          fi
+          
+          if [ "$LATEST_TIMESTAMP" -eq 0 ]; then
+             path=$(find . -maxdepth 2 -name "pom.xml" -print -quit)
+             if [ -n "$path" ]; then
+                PROJECT_DIR=$(dirname "$path")
+             fi
+          fi
+          
+          echo "Projeto principal selecionado: $PROJECT_DIR"
+          echo "PROJECT_PATH=$PROJECT_DIR" >> $GITHUB_ENV
+
+
+      - name: SonarCloud Scan for Maven
+        if: env.SONAR_ANALYSIS_PERFORMED == 'false'
+        uses: SonarSource/sonarqube-scan-action@v5
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        with:
+          projectBaseDir: ${{ env.PROJECT_PATH }}
+          args: -Dsonar.projectKey=grilo-org_20250730T200630_famorim88_chat-sample -Dsonar.organization=grilo-org -Dsonar.host.url=https://sonarcloud.io -Dsonar.sources=app/src -Dsonar.java.binaries=target/classes
+
+      - name: Upload Multi-Project Alert
+        if: env.ALERT_FILE_CREATED == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: multi-project-alert
+          path: multi-project-alert.txt
